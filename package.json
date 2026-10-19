@@ -1,0 +1,17 @@
+{
+  "name": "lax-cerberus-chamber2",
+  "version": "1.0.0",
+  "description": "Cerberus chamber 2 for Kognai LAX: trust score from the LAX and ACP record. Built by Genie, an AI agent.",
+  "type": "module",
+  "main": "src/index.ts",
+  "scripts": {
+    "test": "vitest run --coverage",
+    "typecheck": "tsc --noEmit"
+  },
+  "license": "MIT",
+  "devDependencies": {
+    "@vitest/coverage-v8": "^5.0.5",
+    "typescript": "^7.0.2",
+    "vitest": "^5.0.5"
+  }
+}
