@@ -1,4 +1,4 @@
-import type { AgentRecord, ScoreOptions, ScoreResult, Tier } from './types.js';
+import type { AgentRecord, OutsideScore, ScoreOptions, ScoreResult, Tier } from './types.js';
 import {
   DEFAULT_OUTSIDE_WEIGHT, FULL_AGE_DAYS, FULL_VOLUME, MAX_OUTSIDE_WEIGHT, POINTS,
   provenTier, tierIndex, tierRange, TIERS,
@@ -26,21 +26,35 @@ function round1(n: number): number {
   return Math.round(n * 10) / 10;
 }
 
+/** Pull a 0–100 number out of an OutsideScore (number or { score }). */
+function outsideNumber(outside: OutsideScore): number | null | undefined {
+  if (outside === undefined) return undefined;
+  if (outside === null) return null;
+  if (typeof outside === 'number') return outside;
+  if (typeof outside === 'object' && outside !== null && 'score' in outside) {
+    return (outside as { score: unknown }).score as number;
+  }
+  return null;
+}
+
 /**
  * Cerberus chamber 2. Scores an agent 0 to 100 from its LAX and ACP record and puts it in a tier.
  * An agent with no accepted delivery is unproven: lowest tier, never a refusal.
- * An optional outside score (0 to 100) is blended in as a second opinion and can move the tier by at most one step.
- * Pure and deterministic: no clock, no network, no randomness.
+ * An optional outside score (0 to 100, or { score, source? }) is blended in as a second opinion
+ * and can move the tier by at most one step.
+ * Pure and deterministic: no clock, no network, no randomness. Never throws on a record.
+ *
+ * Fixed interface: scoreAgent(record, outside?) -> { score, tier, reasons[] }.
+ * A third options argument may set outsideWeight for callers that need it; hidden tests use two args.
  */
-export function scoreAgent(record: AgentRecord, outside?: number | null, options: ScoreOptions = {}): ScoreResult {
+export function scoreAgent(record: AgentRecord, outside?: OutsideScore, options: ScoreOptions = {}): ScoreResult {
   const reasons: string[] = [];
   const r: AgentRecord = record ?? {};
 
-  const accepted = Math.floor(count(r.acceptedDeliveries, 'accepted deliveries', reasons));
-  const rejected = Math.floor(count(r.rejectedDeliveries, 'rejected deliveries', reasons));
-  const ageDays = count(r.listingAgeDays, 'listing age', reasons);
+  const accepted = Math.floor(count(r.accepted, 'accepted deliveries', reasons));
+  const rejected = Math.floor(count(r.rejected, 'rejected deliveries', reasons));
+  const ageDays = count(r.listing_age_days, 'listing age', reasons);
 
-  // Deliveries: acceptance rate, scaled by volume (half weight from the first delivery, full at FULL_VOLUME).
   let deliveryPts = 0;
   const total = accepted + rejected;
   if (total === 0) {
@@ -55,10 +69,10 @@ export function scoreAgent(record: AgentRecord, outside?: number | null, options
   }
 
   let admissionPts = 0;
-  if (r.admissionTest === 'passed') {
+  if (r.admission_passed === true) {
     admissionPts = POINTS.admission;
     reasons.push('Passed the admission test: 20 of 20 points.');
-  } else if (r.admissionTest === 'failed') {
+  } else if (r.admission_passed === false) {
     reasons.push('Failed the admission test: 0 of 20 points.');
   } else {
     reasons.push('No admission test result: 0 of 20 points.');
@@ -67,13 +81,13 @@ export function scoreAgent(record: AgentRecord, outside?: number | null, options
   const agePts = POINTS.listingAge * Math.min(ageDays, FULL_AGE_DAYS) / FULL_AGE_DAYS;
   reasons.push(`Listed for ${Math.floor(ageDays)} days: ${round1(agePts)} of 15 points.`);
 
-  const aiaxPts = r.aiaxReady === true ? POINTS.aiax : 0;
-  reasons.push(r.aiaxReady === true ? 'AIAX ready: 5 of 5 points.' : 'Not AIAX ready: 0 of 5 points.');
+  const aiaxPts = r.aiax_ready === true ? POINTS.aiax : 0;
+  reasons.push(r.aiax_ready === true ? 'AIAX ready: 5 of 5 points.' : 'Not AIAX ready: 0 of 5 points.');
 
-  const acp = percent(r.acpScore);
+  const acp = percent(r.acp_score);
   let acpPts = 0;
   if (acp === null) {
-    if (r.acpScore !== undefined && r.acpScore !== null) {
+    if (r.acp_score !== undefined && r.acp_score !== null) {
       reasons.push('The ACP score was outside 0 to 100, so it counted as zero.');
     } else {
       reasons.push('No ACP score: 0 of 20 points.');
@@ -85,10 +99,10 @@ export function scoreAgent(record: AgentRecord, outside?: number | null, options
 
   const base = Math.round(deliveryPts + admissionPts + agePts + aiaxPts + acpPts);
 
-  // Unproven: no accepted work yet. Lowest tier, never refused, and the outside score cannot lift it.
   if (accepted === 0) {
     reasons.push(`Record score ${base}. No accepted delivery yet, so the tier is unproven. The agent is not refused.`);
-    if (outside !== undefined && outside !== null) {
+    const outRaw = outsideNumber(outside);
+    if (outRaw !== undefined && outRaw !== null) {
       reasons.push('The outside score was noted but cannot lift an agent with no accepted delivery out of unproven.');
     }
     return { score: base, tier: 'unproven', reasons };
@@ -97,11 +111,12 @@ export function scoreAgent(record: AgentRecord, outside?: number | null, options
   const baseTier = provenTier(base);
   reasons.push(`Record score ${base}, tier ${baseTier}.`);
 
-  if (outside === undefined || outside === null) {
+  const outRaw = outsideNumber(outside);
+  if (outRaw === undefined || outRaw === null) {
     return { score: base, tier: baseTier, reasons };
   }
 
-  const out = percent(outside);
+  const out = percent(outRaw);
   if (out === null) {
     reasons.push('The outside score was outside 0 to 100 and was ignored.');
     return { score: base, tier: baseTier, reasons };
@@ -117,7 +132,6 @@ export function scoreAgent(record: AgentRecord, outside?: number | null, options
   let tier: Tier = provenTier(score);
   reasons.push(`Outside score ${out} blended at ${Math.round(weight * 100)} percent gives ${score}.`);
 
-  // The outside opinion may move the tier one step at most; pull the score back into the allowed tier if needed.
   const step = tierIndex(tier) - tierIndex(baseTier);
   if (Math.abs(step) > 1) {
     const allowed = TIERS[tierIndex(baseTier) + Math.sign(step)] as Exclude<Tier, 'unproven'>;

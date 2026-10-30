@@ -6,6 +6,14 @@ export const TIERS: readonly Tier[] = ['unproven', 'bronze', 'silver', 'gold'];
 export const SILVER_MIN = 60;
 export const GOLD_MIN = 80;
 
+/** Exported tier boundaries table (proven tiers). Unproven is decided by the record, not by score. */
+export const TIER_BOUNDARIES = {
+  unproven: { note: 'no accepted delivery, whatever the score' },
+  bronze: { min: 0, max: SILVER_MIN - 1 },
+  silver: { min: SILVER_MIN, max: GOLD_MIN - 1 },
+  gold: { min: GOLD_MIN, max: 100 },
+} as const;
+
 /** Points available per part of the record. They add up to 100. */
 export const POINTS = {
   deliveries: 40,
